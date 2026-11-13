@@ -109,15 +109,16 @@ An MCP client starts MCPVault as a local stdio process and passes the vault path
 
 - AST-aware frontmatter updates preserve formatting for unchanged YAML fields.
 - Path checks block traversal, symlink escapes, dotfiles, `.obsidian`, `.git`, and `node_modules`.
-- Eighteen MCP tools cover note and file operations:
+- Twenty MCP tools cover note, file, and folder operations:
   - File operations: `read_note`, `write_note`, `patch_note`, `delete_note`, `move_note`, `move_file`
+  - Folder operations: `create_folder`, `delete_folder`
   - Partial reads: `get_note_outline`, `read_note_lines`
   - Directory and batch reads: `list_directory`, `read_multiple_notes`
   - Search: `search_notes` with multi-word matching and BM25 reranking
   - Metadata and tags: `get_frontmatter`, `update_frontmatter`, `get_notes_info`, `get_vault_stats`, `manage_tags`, `list_all_tags`
   - Wiki links: `wiki_link` resolves names and returns alternative paths when a name is ambiguous
 - `write_note` supports overwrite, append, and prepend modes.
-- `delete_note` and `move_file` require matching confirmation paths.
+- `delete_note`, `move_file`, and `delete_folder` require matching confirmation paths.
 - Path arguments are trimmed before validation.
 - Search and batch tools return compact fields by default; set `prettyPrint: true` for expanded output.
 - The package exports TypeScript declarations and public types.
@@ -827,6 +828,62 @@ Move or rename any file in the vault with binary-safe file operations (file-only
 ```
 
 **Confirmation:** `confirmOldPath` must match `oldPath`, and `confirmNewPath` must match `newPath`.
+
+### `create_folder`
+
+Create a folder, with its parents. Calling it for a folder that already exists succeeds with `created: false`. The tool refuses the vault root, dot folders and restricted names, a path that is an existing file, and a name that differs only in case from an existing sibling (Obsidian Sync on a case-insensitive device keeps only one of the two).
+
+**Request:**
+
+```json
+{
+  "name": "create_folder",
+  "arguments": {
+    "path": "Projects/2026"
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "path": "Projects/2026",
+  "message": "Successfully created folder: Projects/2026",
+  "created": true
+}
+```
+
+### `delete_folder`
+
+Delete a folder. By default only an empty folder is removed. To remove a non-empty folder, pass `recursive: true` with `trashMode: "local"`: the whole folder moves to `.trash/<path>` inside the vault (a timestamp suffix is added on collision). Recursive permanent deletion and `trashMode: "system"` are refused, as are the vault root, dot folders, and symbolic links.
+
+**Request:**
+
+```json
+{
+  "name": "delete_folder",
+  "arguments": {
+    "path": "Projects/2025",
+    "confirmPath": "Projects/2025",
+    "recursive": true,
+    "trashMode": "local"
+  }
+}
+```
+
+**Response:**
+
+```json
+{
+  "success": true,
+  "path": "Projects/2025",
+  "message": "Successfully moved folder to vault trash: Projects/2025 (4 entries)"
+}
+```
+
+**Confirmation:** `confirmPath` must match `path`.
 
 ### `read_multiple_notes`
 

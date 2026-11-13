@@ -1,6 +1,6 @@
 import { test, expect, beforeEach, afterEach } from "vitest";
 import { createServer } from "./createServer.js";
-import { mkdtemp, mkdir, readFile, rm, writeFile } from "fs/promises";
+import { mkdtemp, mkdir, readFile, rm, stat, writeFile } from "fs/promises";
 import { join } from "path";
 import { tmpdir } from "os";
 import { Client, InMemoryTransport } from "@modelcontextprotocol/client";
@@ -25,7 +25,7 @@ test("createServer returns a Server instance", () => {
   expect(typeof server.connect).toBe("function");
 });
 
-test("server registers 18 tools", async () => {
+test("server registers 20 tools", async () => {
   const server = createServer(testVaultPath, { version: "1.0.0" });
   const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair();
 
@@ -37,10 +37,12 @@ test("server registers 18 tools", async () => {
   ]);
 
   const result = await client.listTools();
-  expect(result.tools).toHaveLength(18);
+  expect(result.tools).toHaveLength(20);
 
   const toolNames = result.tools.map((t) => t.name).sort();
   expect(toolNames).toEqual([
+    "create_folder",
+    "delete_folder",
     "delete_note",
     "get_frontmatter",
     "get_note_outline",
@@ -63,6 +65,55 @@ test("server registers 18 tools", async () => {
 
   await client.close();
   await server.close();
+});
+
+test("create_folder and delete_folder work through the server", async () => {
+  await writeFile(join(testVaultPath, "note.md"), "# Note");
+
+  const { server, client } = await connectClient();
+  const body = (result: any) => JSON.parse(result.content[0].text);
+  try {
+    const created = await client.callTool({ name: "create_folder", arguments: { path: " Projects/2026 " } });
+    expect(created.isError).toBeFalsy();
+    expect(body(created)).toEqual({ success: true, created: true, path: "Projects/2026", message: "Successfully created folder: Projects/2026" });
+
+    const again = await client.callTool({ name: "create_folder", arguments: { path: "Projects/2026" } });
+    expect(again.isError).toBeFalsy();
+    expect(body(again).created).toBe(false);
+
+    const listing = await client.callTool({ name: "list_directory", arguments: { path: "Projects" } });
+    expect(body(listing).dirs).toEqual(["2026"]);
+
+    const onFile = await client.callTool({ name: "create_folder", arguments: { path: "note.md" } });
+    expect(onFile.isError).toBe(true);
+
+    const dotFolder = await client.callTool({ name: "create_folder", arguments: { path: ".obsidian/plugins" } });
+    expect(dotFolder.isError).toBe(true);
+    expect(body(dotFolder).message).toContain("Access denied");
+
+    const root = await client.callTool({ name: "delete_folder", arguments: { path: ".", confirmPath: "." } });
+    expect(root.isError).toBe(true);
+
+    const notEmpty = await client.callTool({ name: "delete_folder", arguments: { path: "Projects", confirmPath: "Projects" } });
+    expect(notEmpty.isError).toBe(true);
+    expect(body(notEmpty).message).toContain("Folder is not empty: Projects (1 entries)");
+
+    const emptied = await client.callTool({ name: "delete_folder", arguments: { path: "Projects/2026", confirmPath: "Projects/2026" } });
+    expect(emptied.isError).toBeFalsy();
+
+    await writeFile(join(testVaultPath, "Projects/plan.md"), "# Plan");
+    const trashed = await client.callTool({
+      name: "delete_folder",
+      arguments: { path: "Projects", confirmPath: "Projects", recursive: true, trashMode: "local" },
+    });
+    expect(trashed.isError).toBeFalsy();
+    expect(await readFile(join(testVaultPath, ".trash/Projects/plan.md"), "utf8")).toBe("# Plan");
+    expect(await readFile(join(testVaultPath, "note.md"), "utf8")).toBe("# Note");
+    expect((await stat(testVaultPath)).isDirectory()).toBe(true);
+  } finally {
+    await client.close();
+    await server.close();
+  }
 });
 
 test("server can read and write notes via tools", async () => {
@@ -282,6 +333,7 @@ test("wiki_link resolves path-qualified link to the exact file", async () => {
 
 test("read-only mode exposes read tools and rejects every vault mutation", async () => {
   await writeFile(join(testVaultPath, "existing.md"), "# Existing\n\nSafe content");
+  await mkdir(join(testVaultPath, "existing-folder"));
 
   const server = createServer(testVaultPath, {
     version: "1.0.0",
@@ -302,6 +354,8 @@ test("read-only mode exposes read tools and rejects every vault mutation", async
     expect(toolNames).toContain("search_notes");
     expect(toolNames).not.toContain("write_note");
     expect(toolNames).not.toContain("manage_tags");
+    expect(toolNames).not.toContain("create_folder");
+    expect(toolNames).not.toContain("delete_folder");
 
     const readResult = await client.callTool({
       name: "read_note",
@@ -318,6 +372,8 @@ test("read-only mode exposes read tools and rejects every vault mutation", async
       { name: "move_file", arguments: { oldPath: "existing.md", newPath: "moved.md", confirmOldPath: "existing.md", confirmNewPath: "moved.md" } },
       { name: "update_frontmatter", arguments: { path: "existing.md", frontmatter: { status: "changed" } } },
       { name: "manage_tags", arguments: { path: "existing.md", operation: "list" } },
+      { name: "create_folder", arguments: { path: "blocked-folder" } },
+      { name: "delete_folder", arguments: { path: "existing-folder", confirmPath: "existing-folder" } },
     ];
 
     for (const mutation of mutations) {
@@ -329,6 +385,8 @@ test("read-only mode exposes read tools and rejects every vault mutation", async
     await expect(readFile(join(testVaultPath, "blocked.md"))).rejects.toMatchObject({
       code: "ENOENT",
     });
+    await expect(stat(join(testVaultPath, "blocked-folder"))).rejects.toMatchObject({ code: "ENOENT" });
+    expect((await stat(join(testVaultPath, "existing-folder"))).isDirectory()).toBe(true);
     expect(await readFile(join(testVaultPath, "existing.md"), "utf8")).toBe(
       "# Existing\n\nSafe content",
     );
